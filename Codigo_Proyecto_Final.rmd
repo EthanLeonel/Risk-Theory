@@ -1,0 +1,380 @@
+---
+title: <center> <h0> **Proyecto Final Modelo colectivo de Riesgo y Teoría de la Ruina** </h0> </center>
+author: 
+  <center> <h5> García Melena Ethan Leonel. 316057950. </h5> </center>
+  <center> <h5> Guerrero Suárez Luis Miguel. 316656168. </h5> </center>
+  <center> <h5>  Mercado Ayala Arturo. 419002969. </h5> </center>
+  <center> <h5>  Munguía Pedral Ignacio. 316200163. </h5> </center>
+  <center> <h5>  Topete Olivares Alan Jovanni. 316148157. </h5> </center>
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+---
+
+
+<h1>
+
+<font size = 4> **Introducción**</font>
+
+</h1>
+
+<h1>
+
+<font size = 4> **Metodología** </font>
+
+</h1>
+
+<h1>
+
+<font size = 4> **Paqueterías** </font>
+
+</h1>
+
+```{r message=FALSE, warning=FALSE}
+library(MASS) 
+library(dplyr)
+library(gridExtra)
+library(ggpubr)
+library(ruin)
+library(ggthemes)
+library(tseries)
+library(rriskDistributions)
+library(ggplot2)
+library(readxl)
+library(fitdistrplus)
+library(knitr)
+library(kableExtra)
+library(plotly)
+library(MASS)
+library(actuar)
+```
+
+<h1>
+
+<font size = 4> **Carga de datos** </font>
+
+</h1>
+
+Cargamos la base de datos desde la ruta puesta y realizamos una extracción de aquellos valores que nos son de utilidad (para ver la extracción, se le solicita al lector revisar el código que genera este documento).
+
+Los montos por debajo de 0 represetan una ganancia para la compañía. Sin embargo, para análizar nuestra severidad tomaremos Montos de Siniestro mayores a cero.
+
+Además, aplicaremos la tasa de inflación capitalizada al 2022 para cada año obtenida del Banco De México.
+
+```{r, message=F,warning=F}
+ruta <- "/Users/leogame/Documents/Octavo_Semestre/Teoria_Riesgo/Proyecto/"
+
+datos <- read_excel(paste(ruta,"BD.xlsx",sep=""), sheet ="BD")
+inflacion <- read_excel(paste(ruta,"BD.xlsx",sep=""), sheet ="Inflacion")
+
+datos <- datos %>% filter(MONEDA=="Nacional",GIRO %in% c("Casa Habitacion"),`MONTO DE SINIESTRO`>0) %>% left_join(inflacion,by=c("ANO"="Ano")) %>% mutate(`MONTO DE SINIESTRO`=`MONTO DE SINIESTRO`*Compuesto)
+```
+
+<h1>
+<font size = 4> **Descripción de los datos** </font>
+</h1>
+Ahora que ya filtramos la información para nuestro tipo de seguro (Daños a Vivienda), veamos un histograma de nuestra información de aquellos siniestros mayores a cero y una análisis descriptivo de nuestros datos.
+
+```{r, message=F,warning=F,echo=F,fig.align="center"}
+options(scipen=999)
+#Seleccionamos un tema general para las gráficas a lo largo del documento
+tema = theme_economist() +
+  theme(plot.background = element_rect(fill = "#FFF5DC"),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_line(colour="#2A5783"),
+        axis.title.x = element_blank(), axis.title.y = element_blank())
+
+#Una función que nos permitirá hacer tablas en el paper
+kable_tema = function(dataset, titulo="Tabla", tamano="style='width:100%;'"){
+  kable(dataset,caption=titulo, table.attr=tamano) %>% kable_classic(full_width = T, position = "center")
+}
+
+ggplot(datos,aes(`MONTO DE SINIESTRO`))+geom_histogram(color="Black",fill= "#574AE2")+tema+ggtitle("Histograma de Siniestros de un Seguro de Vivienda")
+
+Descriptivo <- cbind(mean(datos$`MONTO DE SINIESTRO`),sd(datos$`MONTO DE SINIESTRO`), as.numeric(quantile(datos$`MONTO DE SINIESTRO`,.25)), as.numeric(quantile(datos$`MONTO DE SINIESTRO`,.50)),as.numeric(quantile(datos$`MONTO DE SINIESTRO`,.75)), min(datos$`MONTO DE SINIESTRO`), max(datos$`MONTO DE SINIESTRO`))
+
+colnames(Descriptivo) <- c("Media","Desviación","1er Qu.","Mediana","3er Qu.","Min","Max")
+
+tabla <- kable_tema(Descriptivo,titulo = "Estadísticas Descriptivas",tamano = "style='width:50%;'")
+tabla
+```
+
+<h1>
+<font size = 4> **Bondad de Ajuste** </font>
+</h1>
+
+Dado el comportamiento decreciente de nuestro histograma, consideraremos 3 distribuciones de ajuste de bondad, usando criterios de información y pruebas de hipótesis seleccionaremos el mejor modelo.  
+Proponemos distribuciones que solo tienen un dominio en los reales positivos pues nuestras pérdidas solo se reflejan en el intervalo $(0,\infty)$.  
+Utilizaremos el siguiente código para el ajuste de bondad:
+
+```{r, message=F,warning=F}
+# Distribución gamma
+metodo_gam=fitdist(datos$`MONTO DE SINIESTRO`,"gamma",method="mme")
+# Distribución exponencial
+metodo_exp=fitdist(datos$`MONTO DE SINIESTRO`,"exp",method="mme")
+# Distribución lognormal
+metodo_log=fitdist(datos$`MONTO DE SINIESTRO`,"lnorm",method="mle")
+# Distribución weibull
+metodo_wei=fitdist(datos$`MONTO DE SINIESTRO`,"weibull")
+```
+
+Una vez que hemos realizado el ajuste de las distribuciones es de nuestro interés revisar el AIC y BIC de cada modelo ajustado con el propósito de escoger el mejor entre ellos (el que tiene el coeficiente más pequeño).
+
+```{r, include=FALSE}
+a=gofstat(list(metodo_gam,metodo_exp,metodo_log,metodo_wei),fitnames = c("Gamma","Exponencial","LogNormal","Weibull"))
+AIC=t(as.data.frame(a$aic))
+BIC=t(as.data.frame(a$bic))
+b=rbind(AIC,BIC)
+row.names(b) = c("AIC","BIC")
+tabla <- kable_tema(b,titulo = "Coeficientes de AIC y BIC para los 4 modelos",tamano = "style='width:50%;'")
+tabla
+```
+
+Tomando los dos modelos de menor AIC y BIC, tenemos que los mejores ajustes son la distribución Gamma y Weibull.
+
+Ahora, veamos los gráficos correspondientes al ajuste de bondad con la distribución Gamma así como una prueba $K-S$ para determinar si no hay evidencia suficiente para rechazar que nuestros datos sigan esta distribución, considerando una significancia de $\alpha = 95\%$.
+
+```{r,message=F,warning=F,echo=F,fig.align="center"}
+# Graficamos el ajuste de la distribución, pp-plot y qq-plot.
+plot(metodo_gam)
+
+# Realizamos la prueba de hipótesis.
+hip <- ks.test(datos$`MONTO DE SINIESTRO`,"pgamma",metodo_gam$estimate[1], metodo_gam$estimate[2])
+hip
+
+```
+
+Como podemos ver en la prueba $K-S$ nuestro p-value nos sugiere que no podemos rechazar que nuestros datos sigan una distribución gamma. 
+
+Ahora, veamos los gráficos correspondientes al ajuste de bondad con la distribución Weibull así como una prueba $K-S$ para determinar si no hay evidencia suficiente para rechazar que nuestros datos sigan esta distribución, considerando una significancia de $\alpha = 95\%$.
+
+```{r,message=F,warning=F,echo=F,fig.align="center"}
+# Graficamos el ajuste de la distribución, pp-plot y qq-plot.
+plot(metodo_wei)
+
+# Realizamos la prueba de hipótesis.
+
+hip <- ks.test(datos$`MONTO DE SINIESTRO`,"pweibull",metodo_wei$estimate[1], metodo_wei$estimate[2])
+hip
+
+```
+
+Como podemos ver en la prueba $K-S$ nuestro p-value nos sugiere podemos rechazar que nuestros datos sigan una distribución weibull. 
+
+Como conclusión elegiremos a la distribución gamma para simular los montos de pérdida de nuestro modelo colectivo de riesgo S.
+
+<h1>
+<font size = 4> **Modelo de Riesgo** </font>
+</h1>
+
+Construiremos el modelo colectivo de riesgo de la variable aleatoria S.
+Para la variable aleatoria de frecuencia hemos decidido utilizar una variable aleatoria $Poisson(50)$. 
+
+Veamos un histograma de los montos de pérdida simulados por nuestra variable aleatoria gamma. Tenemos tantos montos como número de reclamaciones generados por nuestra variable de frecuencia.
+
+```{r}
+# Simulamos la Variable de Montos de Pérdida.
+lambda_N <- 50
+alpha <- metodo_gam$estimate[1]
+lambda_X <- metodo_gam$estimate[2]
+N  <- rpois(1,lambda_N)
+X <- rgamma(N,alpha,lambda_X)
+Variable_Monto <- as.data.frame(X)
+colnames(Variable_Monto) <- "Montos de Perdida"
+
+# Graficamos el histograma de los montos de pérdida simulados por nuestra variable aleatoria gamma.
+ggplot(Variable_Monto,aes(`Montos de Perdida`))+geom_histogram(color="Black",fill= "#574AE2", bins = 8)+tema+ggtitle("Distribución Teórica de los Montos de Pérdida")
+```
+
+<h1>
+<font size = 4> *Simulaciones del Modelo de Riesgo* </font>
+</h1>
+
+Procederemos a realizar 500 simulaciones de la variable que describe al modelo de riesgo colectivo.
+
+```{r fig.align="center", message=FALSE, warning=FALSE}
+
+# Ahora Simularemos la variable S que captura el total de montos de reclamaciones. Realizaremos 500 simulaciones diferentes con el fin de ver el comportamiento del proceso.
+
+S <- c()
+for(i in (1:500)){
+  N <- rpois(1,lambda_N)
+  X <- sum(rgamma(N,alpha,lambda_X))
+S <- c(S,X)
+}
+S <- cbind(seq(from=1, to = 500, by = 1),S)
+S <- as.data.frame(S)
+colnames(S) <- c("Escenario","Montos")
+
+fig <- plot_ly(data = S, x = ~Escenario, y = ~Montos,
+  color = ~Montos, size = ~Montos
+)
+
+fig <- fig %>% layout(title = 'Simulaciones del Modelo Colectivo de Riesgo S',
+         yaxis = list(zeroline = FALSE),
+         xaxis = list(zeroline = FALSE))
+fig
+
+```
+
+<h1>
+<font size = 4> *Información del Modelo de Riesgo* </font>
+</h1>
+
+Ahora obtenemos la información relacionada al modelo colectivo de riesgo S:
+
+```{r}
+# Esperanza
+Esperanza <- 50*as.vector(alpha)/as.vector(lambda_X)
+
+# Varianza
+Varianza <- 50*(as.vector(alpha)/as.vector(lambda_X))^2 + (as.vector(alpha)/as.vector(lambda_X)^2)*50
+
+# Desviación
+Desviacion <- sqrt(Varianza)
+
+Inf_prem <- as.data.frame(cbind(Esperanza,Varianza, Desviacion))
+colnames(Inf_prem) <- c("Esperanza","Varianza","Desviacion")
+tabla <- kable_tema(Inf_prem,titulo = "Información preliminar de la variable S",tamano = "style='width:50%;'")
+tabla
+```
+
+La función generadora de momentos está dada por:
+
+
+$$\mu_{S}(t) = \mu_{N}(ln(\mu_{X}(t))) = e^{\lambda((\frac{\lambda}{\lambda-t})^{\alpha}-1)}$$
+
+<h1>
+<font size = 4> *Primas asociadas al Modelo de Riesgo* </font>
+</h1>
+
+Una vez que hemos ajustado nuestro modelo colectivo de riesgo calcularemos distintas primas de riesgo.
+
+```{r}
+# Prima neta
+Prima_Neta <- as.vector(alpha)/as.vector(lambda_X)
+# Prima con recargo, suponiendo theta = .3
+Prima_Recargo <- (as.vector(alpha)/as.vector(lambda_X))*(1+.3)
+# Prima con recargo por desviación estándar
+Prima_Desv <- (as.vector(alpha)/as.vector(lambda_X)) + .3*sqrt(as.vector(alpha)/as.vector(lambda_X)^2)
+# Prima por nivel de confianza
+Prima_Confianza <- qgamma(.99,alpha,lambda_X)
+
+Primas <- cbind(Prima_Neta, Prima_Recargo,Prima_Desv,Prima_Confianza)
+Primas <- as.data.frame(Primas)
+colnames(Primas) <- c("Prima Neta","Prima con Recargo", "Prima por Desviaicón","Prima por nivel de confianza")
+
+tabla <- kable_tema(Primas,titulo = "Primas de Riesgo asociadas al modelo colectivo de riesgo S",tamano = "style='width:50%;'")
+tabla
+
+```
+
+Observando el comportamiento de las primas consideramos que la más adecuada es la prima por desviación estándar. Esto, porque supera el umbrel del 30% que nos interesaría cobrar para obtener ganancias y cubrir gastos.
+
+<h1>
+<font size = 4> **Modelo de Crámer Lundberg** </font>
+</h1>
+En esta parte comenzaremos a realizar el ajuste del modelo de Crámer-Lundberg con el fin de encontrar escenarios donde caigamos en ruina de acuerdo al capital inicial, los ingresos por primay montos de reclamación.
+
+Crearemos una función que simule escenarios donde podríamos caer o no en ruina. Usaremos la librería $ruin()$ la cual nos permite generar dichos escenarios e incluso calcular las probabilidades de ruina. 
+
+<h1>
+<font size = 4> *Escenarios de Ruina* </font>
+</h1>
+
+```{r}
+Ruina <-function(u,c,alpha,lamda_X,lambda_N,n){
+sim_1 <- list()
+sim_1_V <- c()
+for(i in (1:n)){
+model <- CramerLundberg(initial_capital = u,
+                        premium_rate = c,
+                        claim_size_generator = rgamma,
+                        claim_size_parameters = list(n = rpois(1,lambda_N),shape =alpha, rate = lamda_X))
+path <- simulate_path(model = model, max_time_horizon = 10)
+
+  sim_1[[i]] <- c(as.data.frame(slot(path,"path"))[,2])   
+  sim_1_V <- c(sim_1_V,all(as.data.frame(slot(path,"path"))[,2]>0))
+}
+
+Escenarios_Ruina <- cbind(sum(sim_1_V),sum(sim_1_V == F))
+Escenarios_Ruina <- as.data.frame(Escenarios_Ruina) 
+colnames(Escenarios_Ruina) <- c("No Ruina","Ruina")
+tabla <- kable_tema(Escenarios_Ruina,titulo = "Escenarios de Ruina",tamano = "style='width:50%;'")
+return(tabla)
+}
+```
+
+Realizamos 1000 simulaciones con una intensidad $\lambda = 25$, un capital inicial de $u = \$50,000$ y una $c=$ Prima por desviación. Para la variable de monto usaremos los parámetros que ajustamos de la distribución gamma.
+
+```{r}
+Ruina(50000,Prima_Desv,alpha,lambda_X,25,1000)
+```
+
+Realizamos 2500 simulaciones con una intensidad $\lambda = 35$, un capital inicial de $u = \$50,000$ y una $c=$ Prima por desviación. Para la variable de monto usaremos los parámetros que ajustamos de la distribución gamma.
+
+```{r}
+Ruina(50000,Prima_Desv,alpha,lambda_X,lambda_N = 35,2500)
+```
+
+Realizamos 5000 simulaciones con una intensidad $\lambda = 50$, un capital inicial de $u = \$50,000$ y una $c=$ Prima por desviación. Para la variable de monto usaremos los parámetros que ajustamos de la distribución gamma.
+
+```{r}
+Ruina(50000,Prima_Desv,alpha,lambda_X,lambda_N = 50,5000)
+```
+
+<h1>
+<font size = 4> *Probabilidades de Ruina* </font>
+</h1>
+
+En esta parte de igual manera que en el punto anterior nos apoyaremos de la librería $ruin()$ para poder calcular la probabilidad de ruina asociadas a un escenario con un capital inicial, ingreso por primas, intensidad $\lambda$ de un proceso poisson y montos de reclamación generados por una distribución de pérdidas gamma:
+
+```{r}
+# Probabilidades de Ruina.
+# El parámetro sim es el número de simulaciones para estimar las probabilidades de ruina.
+Calculo_Probabilidades <- function(u,c,alpha,lambda_X,lambda_N,sim){
+model <- CramerLundberg(initial_capital = u,
+                        premium_rate = c,
+                        claim_size_generator = rgamma,
+                        claim_size_parameters = list(n = rpois(1,lambda_N),shape =alpha, rate = lambda_X))
+
+Probabilidades <- ruin_probability(model = model,
+                 time_horizon = 10,
+                 simulation_number = sim,
+                 return_paths = F,
+                 parallel = FALSE)
+
+lower <- as.numeric(Probabilidades$ruin_probability[1])
+estimate <- as.numeric(Probabilidades$ruin_probability[2])
+upper <- as.numeric(Probabilidades$ruin_probability[3])
+
+p <- cbind(lower,estimate,upper)
+p <- as.data.frame(p)
+colnames(p) <- c("Intervalo Inferior","Estimación","Intervalo Superior")
+tabla <- kable_tema(p,titulo = "Probabilidades de Ruina",tamano = "style='width:50%;'")
+return(tabla)
+
+}
+
+```
+
+Ahora calcularemos la probabilidad de ruina con la función creada anteriormente bajo el siguiente escenario:  
+
+* $u$ = $50,000  
+* c = Prima por Desviación  
+* $\alpha$ = Parámetro $\alpha$ de nuestra distribución Gamma simulada  
+* $\lambda_{X}$ = Parámetro $\lambda$ de nuestra distribución Gamma simulada
+* $\lambda_{N}$ =  Parámetro $\lambda$ de una distribución Poisson  
+* Número de simulaciones = 100
+
+```{r}
+Calculo_Probabilidades(50000,Prima_Desv,alpha,lambda_X,50,100)
+```
+
+
+
+
+
