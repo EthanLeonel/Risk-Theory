@@ -8,3 +8,15 @@
 - To have more interaction with it you can visit the next site:
 
 #####  [Risk Theory Application.](https://rpubs.com/Leogame/914444 "Risk Theory Application.")
+
+#### All the work that you can see here was made by:  
+
+- García Melena Ethan Leonel
+
+- Guerrero Suárez Luis Miguel
+
+- Mercado Ayala Arturo
+
+- Munguía Pedral Ignacio
+
+- Topete Olivares Alan Jovanni
